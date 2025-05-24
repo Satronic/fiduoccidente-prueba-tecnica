@@ -1,0 +1,50 @@
+# Dependencias
+node_modules/
+*/node_modules/
+*.env
+.env*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos de build y distribución
+dist/
+*/dist/
+build/
+*/build/
+out/
+coverage/
+
+# Archivos de AWS SAM y Serverless Framework
+.aws-sam/
+.serverless/
+
+# Archivos de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.hypothesis/
+.pytest_cache/
+instance/
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Archivos de IDEs
+.idea/
+.vscode/
+*.swp
+*~
