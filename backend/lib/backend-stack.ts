@@ -2,61 +2,54 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-// Importa 'path' si vas a definir Lambdas aquí y necesitas construir rutas a su código.
-// import * as path from 'path';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'; // Importar NodejsFunction
+import * as lambda from 'aws-cdk-lib/aws-lambda'; // Para Runtime, Duration, etc.
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as path from 'path';
 
 // Asegúrate que el nombre de la clase coincida con el que usas en tu archivo bin/xxxx.ts
 export class BackendStack extends cdk.Stack {
-  // Propiedades públicas para que los recursos sean accesibles si se necesitan en otros stacks
-  // o para pasar sus nombres a las Lambdas como variables de entorno.
   public readonly purchaseRequestsTable: dynamodb.Table;
   public readonly approversTable: dynamodb.Table;
   public readonly evidenceBucket: s3.Bucket;
+  public readonly api: apigateway.RestApi;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // --- Detección de Ambiente ---
-    // Lee la variable de contexto 'environment'.
-    // Si no se pasa (-c environment=nombre_ambiente) al ejecutar cdk deploy/synth,
-    // usará el valor de 'context.environment' en cdk.json, o 'dev' como valor por defecto si no está en cdk.json.
     const environment = this.node.tryGetContext('environment') ?? 'dev';
-
-    // Determinar si el ambiente es de tipo producción (para la evaluación, consideraremos 'evaluation' como producción)
     const isProdLikeEnvironment = environment === 'prod' || environment === 'evaluation';
 
     // --- Configuraciones Basadas en el Ambiente ---
     const dynamoDbRemovalPolicy = isProdLikeEnvironment ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
-    // Para S3, si es RETAIN, autoDeleteObjects no se aplica o se ignora.
-    // Si fuera DESTROY (para dev), autoDeleteObjects: true es útil.
     const s3RemovalPolicy = isProdLikeEnvironment ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
-    const s3AutoDeleteObjects = !isProdLikeEnvironment; // Habilitar solo si removalPolicy es DESTROY
-    const s3BucketVersioning = isProdLikeEnvironment; // Habilitar versionado para ambientes tipo producción
+    const s3AutoDeleteObjects = !isProdLikeEnvironment;
+    const s3BucketVersioning = isProdLikeEnvironment;
 
     // --- 1. Definición de Tablas DynamoDB ---
     this.purchaseRequestsTable = new dynamodb.Table(this, 'PurchaseRequestsTable', {
-      // Usar el nombre del ambiente en el nombre de la tabla para evitar colisiones entre ambientes
       tableName: `PurchaseRequestsTable-${environment}`,
       partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: dynamoDbRemovalPolicy, // Política de eliminación basada en el ambiente
-      // pointInTimeRecovery: isProdLikeEnvironment, // Habilitar PITR para ambientes tipo producción
+      removalPolicy: dynamoDbRemovalPolicy,
+      pointInTimeRecovery: isProdLikeEnvironment, // Habilitar PITR para ambientes tipo producción
     });
 
     this.purchaseRequestsTable.addGlobalSecondaryIndex({
       indexName: 'RequesterEmailIndex',
       partitionKey: { name: 'requesterEmail', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING }, // o NUMBER si usas Epoch
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
     this.approversTable = new dynamodb.Table(this, 'ApproversTable', {
-      tableName: `ApproversTable-${environment}`, // Nombre de tabla por ambiente
+      tableName: `ApproversTable-${environment}`,
       partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'approverEmail', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: dynamoDbRemovalPolicy, // Política de eliminación basada en el ambiente
-      // pointInTimeRecovery: isProdLikeEnvironment, // Habilitar PITR para ambientes tipo producción
+      removalPolicy: dynamoDbRemovalPolicy,
+      pointInTimeRecovery: isProdLikeEnvironment, // Habilitar PITR para ambientes tipo producción
     });
 
     this.approversTable.addGlobalSecondaryIndex({
@@ -66,39 +59,85 @@ export class BackendStack extends cdk.Stack {
     });
 
     // --- 2. Definición de Bucket S3 ---
-    // Nombre de bucket único globalmente, incluyendo el ambiente
     const bucketName = `fiduoccidente-evidencias-${environment}-${this.account}-${this.region}`;
     this.evidenceBucket = new s3.Bucket(this, 'EvidenceBucket', {
       bucketName: bucketName,
-      removalPolicy: s3RemovalPolicy, // Política de eliminación basada en el ambiente
-      // autoDeleteObjects solo tiene efecto si removalPolicy es DESTROY.
-      // Si es RETAIN, el bucket no se borra, por lo tanto los objetos tampoco.
+      removalPolicy: s3RemovalPolicy,
       autoDeleteObjects: s3AutoDeleteObjects && !isProdLikeEnvironment ? true : undefined,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, // Siempre recomendado
-      encryption: s3.BucketEncryption.S3_MANAGED, // Encriptación por defecto S3
-      versioned: s3BucketVersioning, // Versionado basado en el ambiente
-      // lifecycleRules: [...] // Podrías añadir reglas de ciclo de vida para producción
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: s3BucketVersioning,
     });
 
-    // --- Outputs (para referencia fácil después del despliegue) ---
+    // --- 3. Definición de API Gateway ---
+    this.api = new apigateway.RestApi(this, `FiduoccidenteApi-${environment}`, {
+      restApiName: `Fiduoccidente Approval Flow API (${environment})`,
+      description: `API para el flujo de aprobaciones - Ambiente: ${environment}`,
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS, // Sé más específico en producción
+        allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowHeaders: [
+          'Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key',
+          'X-Amz-Security-Token', 'X-Requester-Email', 'X-Approver-Token'
+        ],
+      },
+      deployOptions: {
+        stageName: environment, // Crea un stage con el nombre del ambiente
+      },
+    });
+
+    // --- 4. Definición de la Función Lambda para Crear Solicitudes ---
+    const createPurchaseRequestFunction = new NodejsFunction(this, 'CreatePurchaseRequestFunction', {
+      functionName: `CreatePurchaseRequestFunction-${environment}`,
+      runtime: lambda.Runtime.NODEJS_18_X, // O la versión que prefieras (ej. NODEJS_20_X)
+      entry: path.join(__dirname, '../src/handlers/purchaseRequests/createRequest.ts'), // Apunta al archivo .ts
+      handler: 'handler', // Nombre de la función exportada en createRequest.ts
+      bundling: {
+        minify: isProdLikeEnvironment, // Minificar en producción/evaluación
+        sourceMap: !isProdLikeEnvironment, // Generar source maps solo en desarrollo
+      },
+      environment: {
+        PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName,
+        APPROVERS_TABLE_NAME: this.approversTable.tableName,
+        ENVIRONMENT: environment,
+        FRONTEND_URL: isProdLikeEnvironment ? "https://TU_URL_FRONTEND_PROD_EVAL.com" : "http://localhost:3001", // Reemplaza la URL de prod/eval
+      },
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+    });
+
+    // Otorgar permisos a la Lambda para escribir en las tablas DynamoDB
+    this.purchaseRequestsTable.grantReadWriteData(createPurchaseRequestFunction);
+    this.approversTable.grantReadWriteData(createPurchaseRequestFunction);
+
+    // --- 5. Integración de la Lambda con API Gateway ---
+    const purchaseRequestsResource = this.api.root.addResource('purchase-requests');
+    purchaseRequestsResource.addMethod('POST', new apigateway.LambdaIntegration(createPurchaseRequestFunction));
+
+    // --- Outputs ---
     new cdk.CfnOutput(this, 'EnvironmentDeployed', {
       value: environment,
       description: 'Ambiente desplegado actualmente.',
     });
-
     new cdk.CfnOutput(this, 'PurchaseRequestsTableNameOutput', {
       value: this.purchaseRequestsTable.tableName,
       description: 'Nombre de la tabla DynamoDB para Solicitudes de Compra.',
     });
-
     new cdk.CfnOutput(this, 'ApproversTableNameOutput', {
       value: this.approversTable.tableName,
       description: 'Nombre de la tabla DynamoDB para Aprobadores.',
     });
-
     new cdk.CfnOutput(this, 'EvidenceBucketNameOutput', {
       value: this.evidenceBucket.bucketName,
       description: 'Nombre del bucket S3 para las evidencias PDF.',
+    });
+    new cdk.CfnOutput(this, 'ApiEndpointOutput', {
+      value: this.api.urlForPath(purchaseRequestsResource.path), // URL específica del recurso /purchase-requests
+      description: `Endpoint URL para POST /purchase-requests en API Gateway (stage ${environment})`,
+    });
+    new cdk.CfnOutput(this, 'ApiBaseUrlOutput', {
+      value: this.api.url, // URL base de la API (incluye el stage)
+      description: `URL Base para API Gateway (stage ${environment})`,
     });
   }
 }
