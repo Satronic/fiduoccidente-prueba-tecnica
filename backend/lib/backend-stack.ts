@@ -106,13 +106,39 @@ export class BackendStack extends cdk.Stack {
       memorySize: 256,
     });
 
-    // Otorgar permisos a la Lambda para escribir en las tablas DynamoDB
+    // --- 5: Función Lambda para Listar Solicitudes del Usuario (GET /purchase-requests) ---
+    const listUserRequestsFunction = new NodejsFunction(this, 'ListUserRequestsFunction', {
+        functionName: `ListUserRequestsFunction-${environment}`,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/purchaseRequests/listUserRequests.ts'), // Apunta al nuevo archivo
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+            externalModules: ['aws-sdk'], // Si usas SDK v2 global; si usas v3 empaquetado, puedes quitarla.
+        },
+        environment: {
+            PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName,
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 256, // Ajusta según necesidad, puede ser menos para una simple query.
+    });
+
+    // ---6. Otorgar permisos a la Lambda para escribir en las tablas DynamoDB
     this.purchaseRequestsTable.grantReadWriteData(createPurchaseRequestFunction);
     this.approversTable.grantReadWriteData(createPurchaseRequestFunction);
 
-    // --- 5. Integración de la Lambda con API Gateway ---
+    // Otorgar permisos de lectura a la tabla PurchaseRequests (específicamente para el GSI)
+    this.purchaseRequestsTable.grantReadData(listUserRequestsFunction)
+
+    // --- 7. Integración de la Lambda con API Gateway ---
     const purchaseRequestsResource = this.api.root.addResource('purchase-requests');
     purchaseRequestsResource.addMethod('POST', new apigateway.LambdaIntegration(createPurchaseRequestFunction));
+
+    // Añadir método GET a /purchase-requests
+    purchaseRequestsResource.addMethod('GET', new apigateway.LambdaIntegration(listUserRequestsFunction));
+
 
     // --- Outputs ---
     new cdk.CfnOutput(this, 'EnvironmentDeployed', {
