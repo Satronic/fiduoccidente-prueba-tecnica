@@ -1,0 +1,408 @@
+openapi: 3.0.0
+info:
+  title: API de Flujo de Aprobaciones Fiduoccidente
+  version: v1.0.0
+  description: API para gestionar solicitudes de compra y su proceso de aprobación, como parte de la prueba técnica para Fiduoccidente.
+
+servers:
+  - url: https://ojk7frnju0.execute-api.us-east-1.amazonaws.com/dev # URL de API Gateway actualizada
+    description: Servidor Desplegado (AWS API Gateway - Dev Stage)
+  - url: http://localhost:3000/dev # Ejemplo para desarrollo local con SAM o Serverless Offline
+    description: Servidor de Desarrollo Local
+
+components:
+  schemas:
+    PurchaseRequestInput:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Título de la solicitud de compra.
+          example: "Compra de Licencias de Software XYZ"
+        description:
+          type: string
+          description: Descripción detallada de la solicitud.
+          example: "Nuevas licencias para el equipo de desarrollo, versión Pro."
+        amount:
+          type: number
+          format: float
+          description: Monto de la solicitud.
+          example: 1250.75
+        approverEmails:
+          type: array
+          items:
+            type: string
+            format: email
+          minItems: 3
+          maxItems: 3
+          description: Lista de los correos electrónicos de los tres aprobadores.
+          example: ["approver1@example.com", "approver2@example.com", "approver3@example.com"]
+      required:
+        - title
+        - description
+        - amount
+        - approverEmails
+
+    PurchaseRequestResponse:
+      type: object
+      properties:
+        purchaseRequestId:
+          type: string
+          format: uuid
+          description: ID único de la solicitud creada.
+        title:
+          type: string
+        description:
+          type: string
+        amount:
+          type: number
+          format: float
+        requesterEmail:
+          type: string
+          format: email
+        status:
+          type: string
+          description: Estado actual de la solicitud.
+        approvers: # Detalle del estado de cada aprobador
+          type: array
+          items:
+            $ref: '#/components/schemas/ApproverInfo'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        pdfEvidenceS3Key:
+          type: string
+          nullable: true
+          description: Clave del objeto S3 donde se guarda el PDF de evidencia.
+
+    ApproverInfo: # Información del estado de un aprobador para mostrar en el detalle de la solicitud
+      type: object
+      properties:
+        approverEmail:
+          type: string
+          format: email
+        approvalStatus:
+          type: string
+          description: Estado de la aprobación para este aprobador ("PendingOtp", "PendingDecision", "Signed", "Rejected").
+        decisionDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: Fecha en que se tomó la decisión.
+        signatureName:
+          type: string
+          nullable: true
+          description: Nombre registrado como firma.
+        approvalOrder:
+          type: number
+
+    ApprovalLinkInfo: # Información que el frontend necesita para la página de aprobación inicial
+      type: object
+      properties:
+        purchaseRequestId:
+          type: string
+          format: uuid
+        purchaseRequestDetails: # Detalle de la compra para mostrar al aprobador
+          type: object
+          properties:
+            title:
+              type: string
+            description:
+              type: string
+            amount:
+              type: number
+            requesterEmail: # Para mostrar quién hizo la solicitud
+              type: string
+              format: email
+            createdAt:
+              type: string
+              format: date-time
+        message: # Mensaje como "OTP generado..."
+            type: string
+
+
+    OtpValidationInput:
+      type: object
+      properties:
+        otp:
+          type: string
+          description: Código OTP ingresado por el aprobador.
+      required:
+        - otp
+
+    DecisionInput:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: ["approve", "reject"]
+          description: Decisión del aprobador ("approve" o "reject").
+        signatureName:
+          type: string
+          nullable: true
+          description: Nombre para la firma simulada (requerido si la decisión es "approve").
+      required:
+        - decision
+
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        details:
+          type: string
+          nullable: true
+
+    MockMailItem:
+      type: object
+      properties:
+        to:
+          type: string
+        subject:
+          type: string
+        body:
+          type: string
+        link:
+          type: string
+          format: url
+
+  parameters:
+    PurchaseRequestIdPath:
+      name: purchaseRequestId
+      in: path
+      required: true
+      description: ID de la solicitud de compra.
+      schema:
+        type: string
+        format: uuid
+    PurchaseRequestIdQuery:
+      name: purchase_request_id
+      in: query
+      required: true
+      description: ID de la solicitud de compra (para el link de aprobación).
+      schema:
+        type: string
+        format: uuid
+    ApproverTokenQuery:
+      name: approver_token
+      in: query
+      required: true
+      description: Token único del aprobador para el link inicial.
+      schema:
+        type: string
+        format: uuid
+    RequesterEmailHeader:
+      name: X-Requester-Email
+      in: header
+      required: true # Para endpoints del solicitante
+      description: Email del solicitante que realiza la acción.
+      schema:
+        type: string
+        format: email
+    ApproverTokenHeader:
+      name: X-Approver-Token
+      in: header
+      required: true # Para endpoints de validación de OTP y decisión
+      description: Token único del aprobador para identificar su sesión de aprobación.
+      schema:
+        type: string
+        format: uuid
+
+  securitySchemes:
+    RequesterIdentity: # Usado para identificar al solicitante
+      type: apiKey
+      in: header
+      name: X-Requester-Email
+    ApproverIdentity: # Usado para identificar la sesión del aprobador
+      type: apiKey
+      in: header
+      name: X-Approver-Token
+
+
+paths:
+  /purchase-requests:
+    post:
+      summary: Crea una nueva solicitud de compra
+      description: Permite a un solicitante crear una nueva solicitud. El `requesterEmail` se toma del header `X-Requester-Email`.
+      security:
+        - RequesterIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequesterEmailHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseRequestInput'
+      responses:
+        '201':
+          description: Solicitud creada exitosamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '400': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+    get:
+      summary: Lista las solicitudes de compra de un solicitante
+      description: Retorna una lista de todas las solicitudes creadas por el `requesterEmail` del header.
+      security:
+        - RequesterIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/RequesterEmailHeader'
+      responses:
+        '200':
+          description: Lista de solicitudes obtenida exitosamente.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PurchaseRequestResponse'
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /purchase-requests/{purchaseRequestId}:
+    get:
+      summary: Obtiene los detalles de una solicitud de compra específica
+      description: Retorna los detalles de una solicitud y el estado de sus aprobadores. Requiere `X-Requester-Email`.
+      security:
+        - RequesterIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/PurchaseRequestIdPath'
+        - $ref: '#/components/parameters/RequesterEmailHeader'
+      responses:
+        '200':
+          description: Detalles de la solicitud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '403': { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /purchase-requests/approve:
+    get:
+      summary: Inicia el proceso de aprobación para un aprobador (paso 1 - obtener info y generar OTP)
+      description: Valida `purchase_request_id` y `approver_token` de la query. Retorna info de la solicitud. El OTP se genera y guarda en backend.
+      parameters:
+        - $ref: '#/components/parameters/PurchaseRequestIdQuery'
+        - $ref: '#/components/parameters/ApproverTokenQuery'
+      security: [] # Endpoint público o validado solo por tokens en query
+      responses:
+        '200':
+          description: Información de la solicitud para aprobación, OTP generado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalLinkInfo'
+        '400': { $ref: '#/components/schemas/ErrorResponse' }
+        '403': { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /purchase-requests/{purchaseRequestId}/validate-otp:
+    post:
+      summary: Valida el OTP ingresado por un aprobador (paso 2)
+      description: El aprobador envía el OTP. Se usa `X-Approver-Token` (header) para identificar la sesión.
+      security:
+        - ApproverIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/PurchaseRequestIdPath'
+        - $ref: '#/components/parameters/ApproverTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpValidationInput'
+      responses:
+        '200':
+          description: OTP validado correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "OTP validado correctamente. Puede proceder a tomar una decisión."
+        '400': { $ref: '#/components/schemas/ErrorResponse' } # Ej. OTP inválido, expirado
+        '401': { $ref: '#/components/schemas/ErrorResponse' } # Ej. Token de aprobador inválido
+        '403': { $ref: '#/components/schemas/ErrorResponse' } # Ej. Token no coincide con la solicitud
+        '404': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /purchase-requests/{purchaseRequestId}/decision:
+    post:
+      summary: Registra la decisión de un aprobador (paso 3 - aprobar/rechazar)
+      description: El aprobador envía su decisión tras OTP válido. Se usa `X-Approver-Token` (header).
+      security:
+        - ApproverIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/PurchaseRequestIdPath'
+        - $ref: '#/components/parameters/ApproverTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Decisión registrada exitosamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  purchaseRequestId: { type: string, format: uuid }
+                  approverEmail: { type: string, format: email }
+                  newApprovalStatus: { type: string }
+                  overallRequestStatus: { type: string }
+        '400': { $ref: '#/components/schemas/ErrorResponse' } # Ej. Decisión inválida, falta signatureName
+        '401': { $ref: '#/components/schemas/ErrorResponse' } # Ej. Token de aprobador inválido, OTP no validado
+        '403': { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /purchase-requests/{purchaseRequestId}/evidence.pdf:
+    get:
+      summary: Descarga el PDF de evidencia de una solicitud completada
+      description: Permite al solicitante descargar el PDF si la solicitud está "Completada". Requiere `X-Requester-Email`.
+      security:
+        - RequesterIdentity: []
+      parameters:
+        - $ref: '#/components/parameters/PurchaseRequestIdPath'
+        - $ref: '#/components/parameters/RequesterEmailHeader'
+      responses:
+        '200':
+          description: Archivo PDF.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '403': { $ref: '#/components/schemas/ErrorResponse' } # Ej. Acceso denegado, PDF no disponible
+        '404': { $ref: '#/components/schemas/ErrorResponse' }
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
+
+  /mock-mail:
+    get:
+      summary: Obtiene los correos simulados enviados por el sistema
+      description: Endpoint para desarrollo/pruebas que muestra los "correos" simulados.
+      security: [] # Sin seguridad estricta para la prueba
+      responses:
+        '200':
+          description: Lista de correos simulados.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MockMailItem'
+        '500': { $ref: '#/components/schemas/ErrorResponse' }
