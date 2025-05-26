@@ -2,13 +2,12 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs'; // Importar NodejsFunction
-import * as lambda from 'aws-cdk-lib/aws-lambda'; // Para Runtime, Duration, etc.
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as iam from 'aws-cdk-lib/aws-iam'; // Importar iam para políticas granulares si es necesario
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
 
-// Asegúrate que el nombre de la clase coincida con el que usas en tu archivo bin/xxxx.ts
 export class BackendStack extends cdk.Stack {
   public readonly purchaseRequestsTable: dynamodb.Table;
   public readonly approversTable: dynamodb.Table;
@@ -18,11 +17,9 @@ export class BackendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // --- Detección de Ambiente ---
     const environment = this.node.tryGetContext('environment') ?? 'dev';
     const isProdLikeEnvironment = environment === 'prod' || environment === 'evaluation';
 
-    // --- Configuraciones Basadas en el Ambiente ---
     const dynamoDbRemovalPolicy = isProdLikeEnvironment ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
     const s3RemovalPolicy = isProdLikeEnvironment ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
     const s3AutoDeleteObjects = !isProdLikeEnvironment;
@@ -104,7 +101,7 @@ export class BackendStack extends cdk.Stack {
         PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName,
         APPROVERS_TABLE_NAME: this.approversTable.tableName,
         ENVIRONMENT: environment,
-        FRONTEND_URL: isProdLikeEnvironment ? "https://TU_URL_FRONTEND_PROD_EVAL.com" : "http://localhost:3001",
+        FRONTEND_URL: isProdLikeEnvironment ? "https://PENDING_FRONTEND_URL.com" : "http://localhost:3001",
       },
       timeout: cdk.Duration.seconds(15),
       memorySize: 256,
@@ -177,7 +174,7 @@ export class BackendStack extends cdk.Stack {
         memorySize: 256, 
     });
     this.purchaseRequestsTable.grantReadData(getApprovalInfoFunction);
-    this.approversTable.grantReadWriteData(getApprovalInfoFunction);
+    this.approversTable.grantReadWriteData(getApprovalInfoFunction); // Necesita escribir el OTP
     const approveResource = purchaseRequestsResource.addResource('approve'); 
     approveResource.addMethod('GET', new apigateway.LambdaIntegration(getApprovalInfoFunction), {
         authorizationType: apigateway.AuthorizationType.NONE, 
@@ -187,11 +184,11 @@ export class BackendStack extends cdk.Stack {
         },
     });
     
-    // --- 8. NUEVO: Función Lambda para Validar OTP (POST /purchase-requests/{purchaseRequestId}/validate-otp) ---
+    // --- 8. Función Lambda para Validar OTP (POST /purchase-requests/{purchaseRequestId}/validate-otp) ---
     const validateOtpFunction = new NodejsFunction(this, 'ValidateOtpFunction', {
         functionName: `ValidateOtpFunction-${environment}`,
         runtime: lambda.Runtime.NODEJS_18_X,
-        entry: path.join(__dirname, '../src/handlers/approvals/validateOtp.ts'), // Asegúrate que esta ruta sea correcta
+        entry: path.join(__dirname, '../src/handlers/approvals/validateOtp.ts'),
         handler: 'handler',
         bundling: {
             minify: isProdLikeEnvironment,
@@ -204,55 +201,57 @@ export class BackendStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(10),
         memorySize: 128, 
     });
+    this.approversTable.grantReadWriteData(validateOtpFunction);
+    const validateOtpResource = singlePurchaseRequestResource.addResource('validate-otp');
+    validateOtpResource.addMethod('POST', new apigateway.LambdaIntegration(validateOtpFunction), {
+        authorizationType: apigateway.AuthorizationType.NONE, 
+    });
 
-    // Permisos para la función ValidateOtpFunction
-    this.approversTable.grantReadWriteData(validateOtpFunction); // Necesita leer el OTP y luego actualizar el estado/OTP
+    // --- 9. NUEVO: Función Lambda para Registrar Decisión (POST /purchase-requests/{purchaseRequestId}/decision) ---
+    const submitDecisionFunction = new NodejsFunction(this, 'SubmitDecisionFunction', {
+        functionName: `SubmitDecisionFunction-${environment}`,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/approvals/submitDecision.ts'), // Asegúrate que esta ruta sea correcta
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+        },
+        environment: {
+            PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName, // Necesaria para actualizar estado general
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(15), // Puede requerir un poco más por múltiples escrituras
+        memorySize: 256, 
+    });
+
+    // Permisos para la función SubmitDecisionFunction
+    this.purchaseRequestsTable.grantReadWriteData(submitDecisionFunction); // Para actualizar el estado general de la solicitud
+    this.approversTable.grantReadWriteData(submitDecisionFunction); // Para actualizar el estado del aprobador y leer otros
 
     // Nuevo método en API Gateway bajo el recurso con path parameter
     // singlePurchaseRequestResource es /purchase-requests/{purchaseRequestId}
-    const validateOtpResource = singlePurchaseRequestResource.addResource('validate-otp'); // Crea /purchase-requests/{purchaseRequestId}/validate-otp
-    validateOtpResource.addMethod('POST', new apigateway.LambdaIntegration(validateOtpFunction), {
+    const decisionResource = singlePurchaseRequestResource.addResource('decision'); // Crea /purchase-requests/{purchaseRequestId}/decision
+    decisionResource.addMethod('POST', new apigateway.LambdaIntegration(submitDecisionFunction), {
         authorizationType: apigateway.AuthorizationType.NONE, 
         // Aquí podrías añadir un request validator para el cuerpo del POST si lo defines en OpenAPI
-        // y si quieres que API Gateway valide el cuerpo antes de invocar la Lambda.
     });
 
     // --- Outputs ---
-    new cdk.CfnOutput(this, 'EnvironmentDeployed', {
-      value: environment,
-      description: 'Ambiente desplegado actualmente.',
-    });
-    new cdk.CfnOutput(this, 'PurchaseRequestsTableNameOutput', {
-      value: this.purchaseRequestsTable.tableName,
-      description: 'Nombre de la tabla DynamoDB para Solicitudes de Compra.',
-    });
-    new cdk.CfnOutput(this, 'ApproversTableNameOutput', {
-      value: this.approversTable.tableName,
-      description: 'Nombre de la tabla DynamoDB para Aprobadores.',
-    });
-    new cdk.CfnOutput(this, 'EvidenceBucketNameOutput', {
-      value: this.evidenceBucket.bucketName,
-      description: 'Nombre del bucket S3 para las evidencias PDF.',
-    });
-    new cdk.CfnOutput(this, 'ApiBaseUrlOutput', {
-      value: this.api.url, 
-      description: `URL Base para API Gateway (stage ${environment})`,
-    });
-    new cdk.CfnOutput(this, 'ListAndCreatePurchaseRequestsEndpoint', { 
-        value: this.api.urlForPath(purchaseRequestsResource.path),
-        description: `Endpoint URL para GET y POST /purchase-requests (stage ${environment})`
-    });
-    new cdk.CfnOutput(this, 'GetPurchaseRequestByIdBaseEndpoint', { 
-        value: `${this.api.urlForPath(purchaseRequestsResource.path)}/{purchaseRequestId}`,
-        description: `Endpoint base para GET /purchase-requests/{purchaseRequestId} (reemplaza {purchaseRequestId})`
-    });
-    new cdk.CfnOutput(this, 'GetApprovalInfoEndpoint', { 
-        value: `${this.api.urlForPath(approveResource.path)}?purchase_request_id={purchaseRequestIdValue}&approver_token={approverTokenValue}`,
-        description: `Endpoint para GET /purchase-requests/approve (reemplaza los valores en query string)`
-    });
-    new cdk.CfnOutput(this, 'ValidateOtpEndpointBase', { 
-        value: `${this.api.urlForPath(singlePurchaseRequestResource.path)}/validate-otp`.replace('{purchaseRequestId}', '{YOUR_REQUEST_ID}'),
-        description: `Endpoint base para POST /purchase-requests/{purchaseRequestId}/validate-otp (reemplaza {YOUR_REQUEST_ID})`
+    new cdk.CfnOutput(this, 'EnvironmentDeployed', { value: environment });
+    new cdk.CfnOutput(this, 'PurchaseRequestsTableNameOutput', { value: this.purchaseRequestsTable.tableName });
+    new cdk.CfnOutput(this, 'ApproversTableNameOutput', { value: this.approversTable.tableName });
+    new cdk.CfnOutput(this, 'EvidenceBucketNameOutput', { value: this.evidenceBucket.bucketName });
+    new cdk.CfnOutput(this, 'ApiBaseUrlOutput', { value: this.api.url });
+    new cdk.CfnOutput(this, 'ListAndCreatePurchaseRequestsEndpoint', { value: this.api.urlForPath(purchaseRequestsResource.path) });
+    new cdk.CfnOutput(this, 'GetPurchaseRequestByIdBaseEndpoint', { value: `${this.api.urlForPath(purchaseRequestsResource.path)}/{purchaseRequestId}` });
+    new cdk.CfnOutput(this, 'GetApprovalInfoEndpoint', { value: `${this.api.urlForPath(approveResource.path)}?purchase_request_id={purchaseRequestIdValue}&approver_token={approverTokenValue}`});
+    new cdk.CfnOutput(this, 'ValidateOtpEndpointBase', { value: `${this.api.urlForPath(singlePurchaseRequestResource.path)}/validate-otp`.replace('{purchaseRequestId}', '{YOUR_REQUEST_ID}') });
+    // Nuevo Output para el endpoint de decisión
+    new cdk.CfnOutput(this, 'SubmitDecisionEndpointBase', { 
+        value: `${this.api.urlForPath(singlePurchaseRequestResource.path)}/decision`.replace('{purchaseRequestId}', '{YOUR_REQUEST_ID}'),
+        description: `Endpoint base para POST /purchase-requests/{purchaseRequestId}/decision (reemplaza {YOUR_REQUEST_ID})`
     });
   }
 }
