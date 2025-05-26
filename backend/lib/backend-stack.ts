@@ -125,6 +125,27 @@ export class BackendStack extends cdk.Stack {
         memorySize: 256, // Ajusta según necesidad, puede ser menos para una simple query.
     });
 
+    // --- 6: Función Lambda para Obtener Detalle de Solicitud (GET /purchase-requests/{purchaseRequestId}) ---
+    const getPurchaseRequestByIdFunction = new NodejsFunction(this, 'GetPurchaseRequestByIdFunction', {
+        functionName: `GetPurchaseRequestByIdFunction-${environment}`,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/purchaseRequests/getRequestById.ts'), // Apunta al nuevo archivo
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+            externalModules: ['aws-sdk'], // Si usas SDK v2 global; si usas v3 empaquetado, puedes quitarla.
+        },
+        environment: {
+            PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName,
+            APPROVERS_TABLE_NAME: this.approversTable.tableName, // Necesaria para obtener info de aprobadores
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 256, 
+    });
+
+
     // ---6. Otorgar permisos a la Lambda para escribir en las tablas DynamoDB
     this.purchaseRequestsTable.grantReadWriteData(createPurchaseRequestFunction);
     this.approversTable.grantReadWriteData(createPurchaseRequestFunction);
@@ -132,12 +153,21 @@ export class BackendStack extends cdk.Stack {
     // Otorgar permisos de lectura a la tabla PurchaseRequests (específicamente para el GSI)
     this.purchaseRequestsTable.grantReadData(listUserRequestsFunction)
 
+    // Otorgar permisos de lectura a ambas tablas
+    this.purchaseRequestsTable.grantReadData(getPurchaseRequestByIdFunction);
+    this.approversTable.grantReadData(getPurchaseRequestByIdFunction);
+
+
     // --- 7. Integración de la Lambda con API Gateway ---
     const purchaseRequestsResource = this.api.root.addResource('purchase-requests');
     purchaseRequestsResource.addMethod('POST', new apigateway.LambdaIntegration(createPurchaseRequestFunction));
 
     // Añadir método GET a /purchase-requests
     purchaseRequestsResource.addMethod('GET', new apigateway.LambdaIntegration(listUserRequestsFunction));
+
+    // Crear el recurso para el path parameter: /purchase-requests/{purchaseRequestId}
+    const singlePurchaseRequestResource = purchaseRequestsResource.addResource('{purchaseRequestId}');
+    singlePurchaseRequestResource.addMethod('GET', new apigateway.LambdaIntegration(getPurchaseRequestByIdFunction));
 
 
     // --- Outputs ---
