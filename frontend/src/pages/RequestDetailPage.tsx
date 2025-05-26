@@ -1,13 +1,27 @@
 // frontend/src/pages/RequestDetailPage.tsx
 import React from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
+import RequestDetail from '../features/purchaseRequests/RequestDetail'; // Importa el nuevo componente
 
 const RequestDetailPage: React.FC = () => {
   const { purchaseRequestId } = useParams<{ purchaseRequestId: string }>();
+
+  if (!purchaseRequestId) {
+    return (
+      <div>
+        <h1>Error</h1>
+        <p>No se proporcionó un ID de solicitud válido.</p>
+        <Link to="/">Volver al Dashboard</Link>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <h1>Detalle de la Solicitud: {purchaseRequestId}</h1>
-      <p>Aquí se mostrarán los detalles de la solicitud y el estado de los aprobadores.</p>
+      <div style={{ marginTop: '20px' }}>
+        <Link to="/">Volver al Dashboard</Link>
+      </div>
+      <RequestDetail purchaseRequestId={purchaseRequestId} />
     </div>
   );
 };
