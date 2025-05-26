@@ -133,6 +133,9 @@ export class BackendStack extends cdk.Stack {
     this.purchaseRequestsTable.grantReadData(listUserRequestsFunction);
     purchaseRequestsResource.addMethod('GET', new apigateway.LambdaIntegration(listUserRequestsFunction));
 
+    // --- Recurso para una Solicitud de Compra Específica ---
+    const singlePurchaseRequestResource = purchaseRequestsResource.addResource('{purchaseRequestId}');
+
     // --- 6. Función Lambda para Obtener Detalle de Solicitud ---
     const getPurchaseRequestByIdFunction = new NodejsFunction(this, 'GetPurchaseRequestByIdFunction', {
         functionName: `GetPurchaseRequestByIdFunction-${environment}`,
@@ -153,14 +156,13 @@ export class BackendStack extends cdk.Stack {
     });
     this.purchaseRequestsTable.grantReadData(getPurchaseRequestByIdFunction);
     this.approversTable.grantReadData(getPurchaseRequestByIdFunction);
-    const singlePurchaseRequestResource = purchaseRequestsResource.addResource('{purchaseRequestId}');
     singlePurchaseRequestResource.addMethod('GET', new apigateway.LambdaIntegration(getPurchaseRequestByIdFunction));
 
     // --- 7. Función Lambda para Iniciar Aprobación (GET /purchase-requests/approve) ---
     const getApprovalInfoFunction = new NodejsFunction(this, 'GetApprovalInfoFunction', {
         functionName: `GetApprovalInfoFunction-${environment}`,
         runtime: lambda.Runtime.NODEJS_18_X,
-        entry: path.join(__dirname, '../src/handlers/approvals/getApprovalInfo.ts'), // Nueva ruta al handler de aprobación
+        entry: path.join(__dirname, '../src/handlers/approvals/getApprovalInfo.ts'),
         handler: 'handler',
         bundling: {
             minify: isProdLikeEnvironment,
@@ -168,32 +170,53 @@ export class BackendStack extends cdk.Stack {
         },
         environment: {
             PURCHASE_REQUESTS_TABLE_NAME: this.purchaseRequestsTable.tableName,
-            APPROVERS_TABLE_NAME: this.approversTable.tableName, // Necesaria para leer y actualizar el aprobador con OTP
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
             ENVIRONMENT: environment,
         },
         timeout: cdk.Duration.seconds(10),
         memorySize: 256, 
     });
-
-    // Permisos para la función GetApprovalInfoFunction
-    this.purchaseRequestsTable.grantReadData(getApprovalInfoFunction); // Para leer los detalles de la solicitud
-    this.approversTable.grantReadWriteData(getApprovalInfoFunction); // Para leer el aprobador por token y actualizar con OTP/estado
-
-    // Nuevo recurso y método en API Gateway para /purchase-requests/approve
+    this.purchaseRequestsTable.grantReadData(getApprovalInfoFunction);
+    this.approversTable.grantReadWriteData(getApprovalInfoFunction);
     const approveResource = purchaseRequestsResource.addResource('approve'); 
     approveResource.addMethod('GET', new apigateway.LambdaIntegration(getApprovalInfoFunction), {
         authorizationType: apigateway.AuthorizationType.NONE, 
-        requestParameters: { // Definir los query string parameters esperados
-            'method.request.querystring.purchase_request_id': true, // true = requerido
+        requestParameters: { 
+            'method.request.querystring.purchase_request_id': true,
             'method.request.querystring.approver_token': true
         },
-        // Si necesitas un request validator para los query params:
-        // requestValidator: new apigateway.RequestValidator(this, `ApproveQueryValidator-${environment}`, {
-        //   restApi: this.api,
-        //   validateRequestParameters: true,
-        // }),
     });
     
+    // --- 8. NUEVO: Función Lambda para Validar OTP (POST /purchase-requests/{purchaseRequestId}/validate-otp) ---
+    const validateOtpFunction = new NodejsFunction(this, 'ValidateOtpFunction', {
+        functionName: `ValidateOtpFunction-${environment}`,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/approvals/validateOtp.ts'), // Asegúrate que esta ruta sea correcta
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+        },
+        environment: {
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 128, 
+    });
+
+    // Permisos para la función ValidateOtpFunction
+    this.approversTable.grantReadWriteData(validateOtpFunction); // Necesita leer el OTP y luego actualizar el estado/OTP
+
+    // Nuevo método en API Gateway bajo el recurso con path parameter
+    // singlePurchaseRequestResource es /purchase-requests/{purchaseRequestId}
+    const validateOtpResource = singlePurchaseRequestResource.addResource('validate-otp'); // Crea /purchase-requests/{purchaseRequestId}/validate-otp
+    validateOtpResource.addMethod('POST', new apigateway.LambdaIntegration(validateOtpFunction), {
+        authorizationType: apigateway.AuthorizationType.NONE, 
+        // Aquí podrías añadir un request validator para el cuerpo del POST si lo defines en OpenAPI
+        // y si quieres que API Gateway valide el cuerpo antes de invocar la Lambda.
+    });
+
     // --- Outputs ---
     new cdk.CfnOutput(this, 'EnvironmentDeployed', {
       value: environment,
@@ -226,6 +249,10 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'GetApprovalInfoEndpoint', { 
         value: `${this.api.urlForPath(approveResource.path)}?purchase_request_id={purchaseRequestIdValue}&approver_token={approverTokenValue}`,
         description: `Endpoint para GET /purchase-requests/approve (reemplaza los valores en query string)`
+    });
+    new cdk.CfnOutput(this, 'ValidateOtpEndpointBase', { 
+        value: `${this.api.urlForPath(singlePurchaseRequestResource.path)}/validate-otp`.replace('{purchaseRequestId}', '{YOUR_REQUEST_ID}'),
+        description: `Endpoint base para POST /purchase-requests/{purchaseRequestId}/validate-otp (reemplaza {YOUR_REQUEST_ID})`
     });
   }
 }
