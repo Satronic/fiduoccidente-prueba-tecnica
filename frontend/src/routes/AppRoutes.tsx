@@ -6,6 +6,7 @@ import CreateRequestPage from '../pages/CreateRequestPage';
 import RequestDetailPage from '../pages/RequestDetailPage';
 import ApprovalPage from '../pages/ApprovalPage';
 import NotFoundPage from '../pages/NotFoundPage';
+import MockMailsPage from '../pages/MockMailsPage';
 
 const AppRoutes: React.FC = () => {
   return (
@@ -14,6 +15,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/create-request" element={<CreateRequestPage />} />
       <Route path="/requests/:purchaseRequestId" element={<RequestDetailPage />} />
       <Route path="/approve" element={<ApprovalPage />} />
+      <Route path="/mock-mails" element={<MockMailsPage />} /> {/* NUEVA RUTA */}
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
