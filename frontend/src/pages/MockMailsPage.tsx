@@ -77,7 +77,7 @@ const MockMailsPage: React.FC = () => {
         <p>No hay correos simulados disponibles. Intenta crear algunas solicitudes de compra primero.</p>
       ) : (
         <ul style={{ listStyleType: 'none', padding: 0 }}>
-          {mockMails.map((mail, index) => (
+          {mockMails.map((mail) => (
             <li key={mail.purchaseRequestId} style={listItemStyle}>
               <p><strong>Para:</strong> {mail.approverEmail}</p>
               <p><strong>ID Solicitud:</strong> {mail.purchaseRequestId}</p>

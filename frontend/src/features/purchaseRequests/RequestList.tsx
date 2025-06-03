@@ -1,7 +1,7 @@
 // frontend/src/features/purchaseRequests/RequestList.tsx
 import React, { useEffect, useState } from 'react';
 import apiClient from '../../services/apiClient';
-import { Link, useNavigate } from 'react-router-dom'; // useNavigate para el botón
+import { useNavigate } from 'react-router-dom'; // useNavigate para el botón
 
 // Interfaz PurchaseRequest (puedes moverla a un archivo de tipos si se usa en más lugares)
 interface PurchaseRequest {
