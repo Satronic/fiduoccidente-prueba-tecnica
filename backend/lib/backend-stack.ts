@@ -238,6 +238,65 @@ export class BackendStack extends cdk.Stack {
         // Aquí podrías añadir un request validator para el cuerpo del POST si lo defines en OpenAPI
     });
 
+    //--- NUEVO: Función Lambda para Mock Mail (GET /mock-mail) ---
+    const mockMailFunction = new NodejsFunction(this, 'MockMailFunction', {
+        functionName: `MockMailFunction-${environment}`,
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/utils/mockMail.ts'), // Nueva ruta
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+        },
+        environment: {
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
+            FRONTEND_URL: isProdLikeEnvironment ? "https://TU_URL_FRONTEND_PROD_EVAL.com" : "http://localhost:3001", // Reemplaza URL
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 128, 
+    });
+
+    // Permisos para la función MockMailFunction
+    this.approversTable.grantReadData(mockMailFunction); // Necesita leer (Scan) la tabla de aprobadores
+
+    // Nuevo recurso y método en API Gateway para /mock-mail (en la raíz de la API)
+    const mockMailResource = this.api.root.addResource('mock-mail'); 
+    mockMailResource.addMethod('GET', new apigateway.LambdaIntegration(mockMailFunction), {
+        authorizationType: apigateway.AuthorizationType.NONE, // Endpoint de utilidad, sin auth para la prueba
+    });
+
+    // --- NUEVO: Función Lambda para Obtener OTP de Prueba (GET /debug/otp-for-token) ---
+    const getOtpForTokenFunction = new NodejsFunction(this, 'GetOtpForTokenFunction', {
+        functionName: `GetOtpForTokenFunction-${environment}`, // Nombre descriptivo
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/debug/getOtpForToken.ts'), // Ruta al nuevo handler
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+        },
+        environment: {
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 128, 
+    });
+
+    // Permisos para la función GetOtpForTokenFunction
+    this.approversTable.grantReadData(getOtpForTokenFunction); // Solo necesita leer de ApproversTable
+
+    // Nuevo recurso y método en API Gateway para /debug/otp-for-token
+    const debugResource = this.api.root.addResource('debug');
+    const otpForTokenResource = debugResource.addResource('otp-for-token'); 
+    otpForTokenResource.addMethod('GET', new apigateway.LambdaIntegration(getOtpForTokenFunction), {
+        authorizationType: apigateway.AuthorizationType.NONE, // Endpoint de utilidad, sin auth
+        requestParameters: { // Definir el query string parameter esperado
+            'method.request.querystring.approver_token': true, // true = requerido
+        },
+    });
+
     // --- Outputs ---
     new cdk.CfnOutput(this, 'EnvironmentDeployed', { value: environment });
     new cdk.CfnOutput(this, 'PurchaseRequestsTableNameOutput', { value: this.purchaseRequestsTable.tableName });
@@ -252,6 +311,18 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SubmitDecisionEndpointBase', { 
         value: `${this.api.urlForPath(singlePurchaseRequestResource.path)}/decision`.replace('{purchaseRequestId}', '{YOUR_REQUEST_ID}'),
         description: `Endpoint base para POST /purchase-requests/{purchaseRequestId}/decision (reemplaza {YOUR_REQUEST_ID})`
+    });
+
+    // Output para la lista de enlaces de aprovacion
+    new cdk.CfnOutput(this, 'MockMailEndpoint', { 
+        value: this.api.urlForPath(mockMailResource.path),
+        description: `Endpoint para GET /mock-mail (stage ${environment})`
+    });
+
+    // --- Outputs (actualiza si es necesario) ---
+    new cdk.CfnOutput(this, 'GetOtpForTokenEndpoint', { 
+        value: `${this.api.urlForPath(otpForTokenResource.path)}?approver_token={YOUR_APPROVER_TOKEN}`,
+        description: `Endpoint para GET /debug/otp-for-token (reemplaza {YOUR_APPROVER_TOKEN})`
     });
   }
 }
