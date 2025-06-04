@@ -266,6 +266,37 @@ export class BackendStack extends cdk.Stack {
         authorizationType: apigateway.AuthorizationType.NONE, // Endpoint de utilidad, sin auth para la prueba
     });
 
+    // --- NUEVO: Función Lambda para Obtener OTP de Prueba (GET /debug/otp-for-token) ---
+    const getOtpForTokenFunction = new NodejsFunction(this, 'GetOtpForTokenFunction', {
+        functionName: `GetOtpForTokenFunction-${environment}`, // Nombre descriptivo
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(__dirname, '../src/handlers/debug/getOtpForToken.ts'), // Ruta al nuevo handler
+        handler: 'handler',
+        bundling: {
+            minify: isProdLikeEnvironment,
+            sourceMap: !isProdLikeEnvironment,
+        },
+        environment: {
+            APPROVERS_TABLE_NAME: this.approversTable.tableName,
+            ENVIRONMENT: environment,
+        },
+        timeout: cdk.Duration.seconds(10),
+        memorySize: 128, 
+    });
+
+    // Permisos para la función GetOtpForTokenFunction
+    this.approversTable.grantReadData(getOtpForTokenFunction); // Solo necesita leer de ApproversTable
+
+    // Nuevo recurso y método en API Gateway para /debug/otp-for-token
+    const debugResource = this.api.root.addResource('debug');
+    const otpForTokenResource = debugResource.addResource('otp-for-token'); 
+    otpForTokenResource.addMethod('GET', new apigateway.LambdaIntegration(getOtpForTokenFunction), {
+        authorizationType: apigateway.AuthorizationType.NONE, // Endpoint de utilidad, sin auth
+        requestParameters: { // Definir el query string parameter esperado
+            'method.request.querystring.approver_token': true, // true = requerido
+        },
+    });
+
     // --- Outputs ---
     new cdk.CfnOutput(this, 'EnvironmentDeployed', { value: environment });
     new cdk.CfnOutput(this, 'PurchaseRequestsTableNameOutput', { value: this.purchaseRequestsTable.tableName });
@@ -286,6 +317,12 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MockMailEndpoint', { 
         value: this.api.urlForPath(mockMailResource.path),
         description: `Endpoint para GET /mock-mail (stage ${environment})`
+    });
+
+    // --- Outputs (actualiza si es necesario) ---
+    new cdk.CfnOutput(this, 'GetOtpForTokenEndpoint', { 
+        value: `${this.api.urlForPath(otpForTokenResource.path)}?approver_token={YOUR_APPROVER_TOKEN}`,
+        description: `Endpoint para GET /debug/otp-for-token (reemplaza {YOUR_APPROVER_TOKEN})`
     });
   }
 }
